@@ -20,17 +20,17 @@ const AdminDashboard = () => {
 
       <div className="admin-menu">
         <Link to="/admin/products" className="admin-card">
-          <h2>📦 Quản lý sản phẩm</h2>
+          <h2> Quản lý sản phẩm</h2>
           <p>Thêm, sửa, xóa sản phẩm</p>
         </Link>
 
         <Link to="/admin/orders" className="admin-card">
-          <h2>📋 Quản lý đơn hàng</h2>
+          <h2> Quản lý đơn hàng</h2>
           <p>Xem và cập nhật đơn hàng</p>
         </Link>
 
         <Link to="/admin/users" className="admin-card">
-          <h2>👥 Quản lý người dùng</h2>
+          <h2> Quản lý người dùng</h2>
           <p>Xem danh sách tài khoản</p>
         </Link>
       </div>
