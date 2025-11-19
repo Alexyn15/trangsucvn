@@ -9,9 +9,11 @@ const ProductDetail = () => {
   const [product, setProduct] = useState(null);
   const [loading, setLoading] = useState(true);
   const { addToCart } = useContext(CartContext);
+  const [adding, setAdding] = useState(false);
 
   useEffect(() => {
     fetchProduct();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   const fetchProduct = async () => {
@@ -25,9 +27,18 @@ const ProductDetail = () => {
     }
   };
 
-  const handleAddToCart = () => {
-    addToCart(product);
-    alert("Đã thêm vào giỏ hàng!");
+  const handleAddToCart = async () => {
+    if (!product) return;
+    setAdding(true);
+    try {
+      await addToCart(product, 1);
+      alert("Đã thêm vào giỏ hàng!");
+    } catch (err) {
+      console.error("Add to cart error:", err.response?.data || err.message);
+      alert(err.response?.data?.message || "Không thể thêm vào giỏ hàng");
+    } finally {
+      setAdding(false);
+    }
   };
 
   if (loading) return <div className="loading">Đang tải...</div>;
@@ -63,9 +74,13 @@ const ProductDetail = () => {
           <button
             onClick={handleAddToCart}
             className="btn btn-primary btn-large"
-            disabled={product.stock === 0}
+            disabled={product.stock === 0 || adding}
           >
-            {product.stock > 0 ? "Thêm vào giỏ hàng" : "Hết hàng"}
+            {adding
+              ? "Đang thêm..."
+              : product.stock > 0
+              ? "Thêm vào giỏ hàng"
+              : "Hết hàng"}
           </button>
         </div>
       </div>

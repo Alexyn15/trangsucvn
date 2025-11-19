@@ -5,118 +5,134 @@ import React, {
   useContext,
   useRef,
 } from "react";
-import { AuthContext } from "./AuthContext"; // Import để lấy user/token
+import { AuthContext } from "./AuthContext";
 import axios from "axios";
 
 export const CartContext = createContext();
 
 export const CartProvider = ({ children }) => {
-  const [cart, setCart] = useState([]);
-  const authContext = useContext(AuthContext); // Lấy full AuthContext
-  const { user, token } = authContext || {}; // Fallback nếu chưa ready
-  const prevUserIdRef = useRef(user?._id); // Track user trước để detect switch
+  const [cart, setCart] = useState([]); // [{ _id, name, price, imageUrl, quantity }]
+  const authContext = useContext(AuthContext);
+  const { user } = authContext || {};
+  const prevUserIdRef = useRef(null);
 
-  // Load local cart khi init (chạy đầu tiên)
+  // Load local cart on init (guest)
   useEffect(() => {
-    console.log("🔄 Loading local cart..."); // Debug
-    const savedCart = localStorage.getItem("cart");
-    if (savedCart) {
-      const parsedCart = JSON.parse(savedCart);
-      setCart(parsedCart);
-      console.log("📦 Local cart loaded:", parsedCart);
+    try {
+      const savedCart = localStorage.getItem("cart");
+      if (savedCart) {
+        setCart(JSON.parse(savedCart));
+      }
+    } catch (err) {
+      console.error("Failed to parse local cart:", err);
     }
   }, []);
 
-  // Sync localStorage khi cart thay đổi
+  // Persist guest cart to localStorage; remove local when logged in
   useEffect(() => {
-    if (cart.length > 0) {
-      // Chỉ sync nếu có data
-      localStorage.setItem("cart", JSON.stringify(cart));
-      console.log("💾 Synced to localStorage:", cart.length, "items");
-    }
-  }, [cart]);
-
-  // Fetch & merge cart từ server nếu logged in (chạy sau khi Auth ready)
-  useEffect(() => {
-    console.log("👤 User status:", user ? `Logged in: ${user._id}` : "Guest"); // Debug user ID
-    if (user && token) {
-      if (prevUserIdRef.current && prevUserIdRef.current !== user._id) {
-        // Switch user: Clear local cũ
-        localStorage.removeItem("cart");
-        setCart([]);
-        console.log("🔄 Switched user, cleared old cart");
+    if (!user) {
+      try {
+        localStorage.setItem("cart", JSON.stringify(cart));
+      } catch (err) {
+        console.error("Failed to save cart to localStorage:", err);
       }
-      prevUserIdRef.current = user._id;
-      console.log("🌐 Fetching server cart for user:", user._id);
-      fetchCartFromServer();
     } else {
-      // Logout: Giữ local cho guest
-      prevUserIdRef.current = null;
-      console.log("🛒 Guest mode: Keep local only");
+      try {
+        // keep localStorage empty to avoid cross-account leakage
+        localStorage.removeItem("cart");
+      } catch (err) {}
     }
-  }, [user, token]); // Trigger mỗi khi user ID thay đổi (switch login)
+  }, [cart, user]);
+
+  // On user change: merge guest cart to server, then fetch server cart; on logout clear in-memory cart
+  useEffect(() => {
+    if (user) {
+      if (prevUserIdRef.current !== user._id) {
+        (async () => {
+          try {
+            const raw = localStorage.getItem("cart");
+            if (raw) {
+              let guestItems = [];
+              try {
+                const parsed = JSON.parse(raw);
+                guestItems = parsed
+                  .map((it) => {
+                    const productId = it._id || it.productId || it.product;
+                    const quantity = Number(it.quantity) || 1;
+                    if (!productId || quantity <= 0) return null;
+                    return { productId, quantity };
+                  })
+                  .filter(Boolean);
+              } catch (err) {
+                console.error("Invalid local cart format", err);
+              }
+
+              if (guestItems.length > 0) {
+                try {
+                  await axios.post("http://localhost:5000/api/cart/merge", {
+                    items: guestItems,
+                  });
+                } catch (err) {
+                  console.error(
+                    "Merge cart failed:",
+                    err.response?.data || err.message
+                  );
+                }
+              }
+              try {
+                localStorage.removeItem("cart");
+              } catch (err) {}
+            }
+
+            await fetchCartFromServer();
+          } finally {
+            prevUserIdRef.current = user._id;
+          }
+        })();
+      }
+    } else {
+      // logout or guest mode
+      prevUserIdRef.current = null;
+      setCart([]);
+      try {
+        localStorage.removeItem("cart");
+      } catch (err) {}
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
 
   const fetchCartFromServer = async () => {
     try {
       const res = await axios.get("http://localhost:5000/api/cart");
-      console.log("📡 Server cart response:", res.data); // Debug
-      if (res.data && res.data.items && res.data.items.length > 0) {
-        // Map server items bằng product_id (string)
-        const serverItemsMap = new Map(
-          res.data.items.map((item) => [
-            item.product_id.toString(),
-            { ...item, _id: item.product_id.toString() },
-          ]) // Normalize _id cho merge
-        );
-
-        // Merge: Local + Server (ưu tiên server quantity, thêm local nếu server miss)
-        let mergedCart = [...cart]; // Bắt đầu từ local
-        serverItemsMap.forEach((serverItem, id) => {
-          const localIndex = mergedCart.findIndex((item) => item._id === id);
-          if (localIndex !== -1) {
-            // Sync quantity từ server
-            mergedCart[localIndex] = {
-              ...mergedCart[localIndex],
-              quantity: serverItem.quantity,
-            };
-          } else {
-            // Thêm từ server
-            mergedCart.push({
-              _id: serverItem.product_id.toString(),
-              name: serverItem.name,
-              price: serverItem.price,
-              imageUrl: serverItem.imageUrl || "", // Nếu server có
-              quantity: serverItem.quantity,
-            });
-          }
-        });
-
-        setCart(mergedCart);
-        console.log("🔄 Merged cart:", mergedCart);
-      } else {
-        // Server rỗng: Giữ local (không clear!)
-        console.log("🗑️ Server cart empty, keeping local");
-      }
+      const serverCart = (res.data && res.data.items) || [];
+      const mapped = serverCart.map((it) => {
+        const prod = it.product || {};
+        const prodId =
+          typeof prod === "object" && prod._id
+            ? prod._id.toString()
+            : it.product
+            ? it.product.toString()
+            : "";
+        return {
+          _id: prodId,
+          name: it.name || prod.name || "Unknown",
+          price: it.price != null ? it.price : prod.price || 0,
+          imageUrl: it.imageUrl || prod.imageUrl || "",
+          quantity: it.quantity || 1,
+        };
+      });
+      setCart(mapped);
     } catch (error) {
       console.error(
-        "❌ Lỗi fetch cart từ server:",
+        "Error fetching server cart:",
         error.response?.data || error.message
       );
-      // Không clear local nếu lỗi
     }
   };
 
-  // Helper sync to server (ĐỊNH NGHĨA TRƯỚC ĐỂ TRÁNH ESLINT LỖI)
+  // Helper to sync actions to server; returns mapped cart if server returns items
   const syncToServer = async (action, productId = null, quantity = null) => {
-    if (!user || !token) {
-      console.log("👤 Guest: Skip sync to server"); // Debug
-      return;
-    }
-
-    console.log(
-      `🌐 Syncing ${action} for product ${productId}, qty ${quantity}`
-    ); // Debug
-
+    if (!user) return;
     try {
       let response;
       switch (action) {
@@ -132,43 +148,132 @@ export const CartProvider = ({ children }) => {
           );
           break;
         case "clear":
-          response = await axios.put("http://localhost:5000/api/cart/clear");
+          response = await axios.delete("http://localhost:5000/api/cart/clear");
           break;
         default:
           return;
       }
-      console.log("✅ Sync success:", response.status); // Debug
+
+      if (response && response.data && response.data.items) {
+        const mapped = response.data.items.map((it) => {
+          const prod = it.product || {};
+          const prodId =
+            typeof prod === "object" && prod._id
+              ? prod._id.toString()
+              : it.product
+              ? it.product.toString()
+              : "";
+          return {
+            _id: prodId,
+            name: it.name || prod.name || "Unknown",
+            price: it.price != null ? it.price : prod.price || 0,
+            imageUrl: it.imageUrl || prod.imageUrl || "",
+            quantity: it.quantity || 1,
+          };
+        });
+        setCart(mapped);
+        return mapped;
+      } else {
+        await fetchCartFromServer();
+        return cart;
+      }
     } catch (error) {
       console.error(
-        `❌ Sync ${action} failed:`,
-        error.response?.status,
+        `Sync ${action} failed:`,
         error.response?.data || error.message
       );
-      // Optional: Alert user hoặc rollback local (nhưng để mượt thì không)
+      throw error;
     }
   };
 
-  // BÂY GIỜ CÁC FUNCTION NÀY GỌI syncToServer SẼ OK (VÌ ĐÃ DEFINE TRƯỚC)
-  const addToCart = (product) => {
+  /**
+   * addToCart:
+   * - If logged in => call server POST /api/cart/add (await) and update state from response.
+   * - If guest => update local state & localStorage.
+   */
+  const addToCart = async (product, qty = 1) => {
+    if (!product || !product._id) {
+      throw new Error("Invalid product");
+    }
+
+    if (user) {
+      try {
+        const res = await axios.post("http://localhost:5000/api/cart/add", {
+          productId: product._id,
+          quantity: qty,
+        });
+        if (res && res.data && res.data.items) {
+          const mapped = res.data.items.map((it) => {
+            const prod = it.product || {};
+            const prodId =
+              typeof prod === "object" && prod._id
+                ? prod._id.toString()
+                : it.product
+                ? it.product.toString()
+                : "";
+            return {
+              _id: prodId,
+              name: it.name || prod.name || "Unknown",
+              price: it.price != null ? it.price : prod.price || 0,
+              imageUrl: it.imageUrl || prod.imageUrl || "",
+              quantity: it.quantity || 1,
+            };
+          });
+          setCart(mapped);
+          return mapped;
+        } else {
+          await fetchCartFromServer();
+          return cart;
+        }
+      } catch (error) {
+        console.error(
+          "Error addToCart (server):",
+          error.response?.data || error.message
+        );
+        throw error;
+      }
+    }
+
+    // Guest flow
     const existing = cart.find((item) => item._id === product._id);
     let newCart;
     if (existing) {
       newCart = cart.map((item) =>
         item._id === product._id
-          ? { ...item, quantity: item.quantity + 1 }
+          ? { ...item, quantity: item.quantity + qty }
           : item
       );
     } else {
-      newCart = [...cart, { ...product, quantity: 1 }];
+      newCart = [
+        ...cart,
+        {
+          _id: product._id,
+          name: product.name,
+          price: product.price || 0,
+          imageUrl: product.imageUrl || "",
+          quantity: qty,
+        },
+      ];
     }
     setCart(newCart);
-    syncToServer("update", product._id, existing ? existing.quantity + 1 : 1);
+    try {
+      localStorage.setItem("cart", JSON.stringify(newCart));
+    } catch (err) {
+      console.error("Failed save cart to localStorage:", err);
+    }
+    return newCart;
   };
 
   const removeFromCart = (productId) => {
     const newCart = cart.filter((item) => item._id !== productId);
     setCart(newCart);
-    syncToServer("remove", productId);
+    if (user) {
+      syncToServer("remove", productId).catch(() => {});
+    } else {
+      try {
+        localStorage.setItem("cart", JSON.stringify(newCart));
+      } catch (err) {}
+    }
   };
 
   const updateQuantity = (productId, quantity) => {
@@ -180,12 +285,24 @@ export const CartProvider = ({ children }) => {
       item._id === productId ? { ...item, quantity } : item
     );
     setCart(newCart);
-    syncToServer("update", productId, quantity);
+    if (user) {
+      syncToServer("update", productId, quantity).catch(() => {});
+    } else {
+      try {
+        localStorage.setItem("cart", JSON.stringify(newCart));
+      } catch (err) {}
+    }
   };
 
   const clearCart = () => {
     setCart([]);
-    syncToServer("clear");
+    if (user) {
+      syncToServer("clear").catch(() => {});
+    } else {
+      try {
+        localStorage.removeItem("cart");
+      } catch (err) {}
+    }
   };
 
   const getTotal = () => {

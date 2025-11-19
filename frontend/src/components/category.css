@@ -1,0 +1,129 @@
+
+/* Shared styles for categories grid & sidebar */
+.container {
+  padding: 20px;
+}
+
+/* Categories page grid */
+.categories-page .categories-title {
+  margin-bottom: 12px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.categories-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.category-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 14px;
+  border-radius: 6px;
+  background: #fff;
+  text-decoration: none;
+  color: inherit;
+  border: 1px solid #f0f0f0;
+  transition: box-shadow 0.15s ease, transform 0.12s ease;
+  min-height: 140px;
+  justify-content: flex-start;
+}
+
+.category-card:hover {
+  box-shadow: 0 6px 18px rgba(0,0,0,0.06);
+  transform: translateY(-4px);
+}
+
+.category-card-icon {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+  margin-bottom: 10px;
+}
+
+.category-card-icon-placeholder {
+  width: 72px;
+  height: 72px;
+  background: #f7f7f7;
+  border-radius: 8px;
+  margin-bottom: 10px;
+}
+
+.category-card-name {
+  font-weight: 700;
+  margin-bottom: 6px;
+  text-transform: capitalize;
+  text-align: center;
+}
+
+.category-card-count {
+  color: #888;
+  font-size: 13px;
+}
+
+/* Sidebar styles */
+.category-sidebar {
+  padding: 16px;
+  background: #fff;
+  border-radius: 6px;
+  border: 1px solid #eee;
+}
+
+.category-sidebar-title {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.category-list-vertical {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.category-item-vertical {
+  margin-bottom: 10px;
+}
+
+.category-link-vertical {
+  display: flex;
+  align-items: center;
+  text-decoration: none;
+  color: inherit;
+}
+
+.category-icon-vertical {
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+  margin-right: 10px;
+}
+
+.category-name-vertical {
+  font-weight: 600;
+  display: block;
+}
+
+.category-count-vertical {
+  display: block;
+  font-size: 12px;
+  color: #777;
+}
+
+.category-item-vertical.view-all {
+  margin-top: 6px;
+  text-align: left;
+}
+
+@media (max-width: 900px) {
+  .categories-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  }
+  .category-sidebar {
+    display: none; /* hide on small screens */
+  }
+}

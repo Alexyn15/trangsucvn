@@ -97,7 +97,7 @@ router.put("/update/:productId", auth, async (req, res) => {
     const { quantity } = req.body;
     const { productId } = req.params;
 
-    if (!quantity || quantity < 0) {
+    if (typeof quantity === "undefined" || quantity < 0) {
       return res.status(400).json({ message: "Invalid quantity" });
     }
 
@@ -179,6 +179,67 @@ router.delete("/clear", auth, async (req, res) => {
     res.json({ message: "Cart cleared successfully", cart });
   } catch (error) {
     console.error("Error clearing cart:", error);
+    res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * POST /api/cart/merge
+ * Body: { items: [{ productId, quantity }] }
+ * Hợp nhất guest cart (client) vào cart của user:
+ * - Nếu product đã tồn tại trong DB cart -> cộng quantity
+ * - Nếu chưa -> thêm item
+ * Sau merge trả về cart mới (populate items.product)
+ */
+router.post("/merge", auth, async (req, res) => {
+  try {
+    const { items } = req.body;
+    if (!Array.isArray(items)) {
+      return res.status(400).json({ message: "items must be an array" });
+    }
+
+    // Lấy hoặc tạo cart
+    let cart = await Cart.findOne({ user: req.user._id });
+    if (!cart) {
+      cart = new Cart({ user: req.user._id, items: [] });
+    }
+
+    // Duyệt items guest và hợp nhất
+    for (const it of items) {
+      const productId = it.productId;
+      const qty = Number(it.quantity) || 1;
+      if (!productId || qty <= 0) continue;
+
+      // Kiểm tra product tồn tại
+      const product = await Product.findById(productId);
+      if (!product) continue; // bỏ qua nếu product không tồn tại
+
+      // Kiểm tra stock tối thiểu (nếu cần)
+      const idx = cart.items.findIndex(
+        (ci) => ci.product.toString() === productId
+      );
+      if (idx > -1) {
+        cart.items[idx].quantity = cart.items[idx].quantity + qty;
+      } else {
+        cart.items.push({
+          product: productId,
+          name: product.name,
+          price: product.price,
+          imageUrl: product.imageUrl,
+          quantity: qty,
+        });
+      }
+    }
+
+    await cart.save();
+
+    const populated = await Cart.findById(cart._id).populate("items.product");
+    res.json(populated);
+  } catch (error) {
+    console.error("Error merging cart:", error);
     res.status(500).json({
       message: "Server error",
       error: error.message,

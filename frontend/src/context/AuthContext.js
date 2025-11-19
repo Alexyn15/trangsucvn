@@ -54,6 +54,10 @@ export const AuthProvider = ({ children }) => {
 
   const logout = () => {
     localStorage.removeItem("token");
+    // Clear cart on logout to avoid previous user's cart showing for others
+    try {
+      localStorage.removeItem("cart");
+    } catch (err) {}
     delete axios.defaults.headers.common["Authorization"];
     setUser(null);
   };

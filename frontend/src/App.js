@@ -15,6 +15,7 @@ import AdminDashboard from "./pages/admin/AdminDashboard";
 import AdminProducts from "./pages/admin/AdminProducts";
 import AdminOrders from "./pages/admin/AdminOrders";
 import AdminUsers from "./pages/admin/AdminUsers";
+import Categories from "./pages/Categories";
 import "./App.css";
 
 function App() {
@@ -34,7 +35,9 @@ function App() {
                 <Route path="/profile" element={<Profile />} />
                 <Route path="/my-orders" element={<MyOrders />} />
                 <Route path="/payment-result" element={<PaymentResult />} />
-
+                <Route path="/categories" element={<Categories />} />
+                // optional: route to category detail by id
+                <Route path="/categories/:id" element={<Categories />} />
                 {/* Admin Routes */}
                 <Route path="/admin" element={<AdminDashboard />} />
                 <Route path="/admin/products" element={<AdminProducts />} />

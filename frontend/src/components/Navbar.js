@@ -18,6 +18,9 @@ const Navbar = () => {
           <li>
             <Link to="/">Trang chủ</Link>
           </li>
+          <li>
+            <Link to="/categories">Danh mục</Link>
+          </li>
 
           {user ? (
             <>
