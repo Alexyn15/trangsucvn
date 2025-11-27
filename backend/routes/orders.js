@@ -1,13 +1,11 @@
 /**
  * backend/routes/orders.js
  *
- *
- *
  * Endpoints:
- * - POST   /api/orders         -> Tạo đơn hàng và trả về URL thanh toán VNPay
+ * - POST   /api/orders           -> Tạo đơn hàng và trả về URL thanh toán VNPay
  * - GET    /api/orders/my-orders -> Lấy danh sách đơn hàng của user hiện tại
- * - GET    /api/orders/vnpay-return -> VNPay redirect (callback) sau thanh toán, kiểm tra chữ ký và cập nhật trạng thái đơn
- *
+ * - GET    /api/orders/vnpay_return -> VNPay redirect (callback) sau thanh toán
+ * - PUT    /api/orders/pay/:txnRef -> Cập nhật trạng thái thanh toán theo VNPay txnRef
  */
 
 const express = require("express");
@@ -15,128 +13,71 @@ const router = express.Router();
 const Order = require("../models/Order");
 const { auth } = require("../middleware/auth");
 const crypto = require("crypto");
+const config = require("config");
+const qs = require("qs");
 
 /**
- * Các hàm trợ giúp nội bộ để xử lý chữ ký VNPay.
- * - buildVnpSignData: dựng chuỗi ký (signData) từ tham số (loại bỏ vnp_SecureHash/vnp_SecureHashType).
- * - computeVnpHash: tính HMAC-SHA512 từ signData và secret key.
- * - verifyVnpSignature: xác thực chữ ký nhận từ VNPay.
- *
- * Tất cả đặt trong file này để bạn dán đè dễ dàng (theo yêu cầu không tách file).
+ * sortAndEncodeObject(obj)
  */
+function sortAndEncodeObject(obj) {
+  const keys = Object.keys(obj || {})
+    .filter(
+      (k) => obj[k] !== undefined && obj[k] !== null && String(obj[k]) !== ""
+    )
+    .sort();
 
-/**
- * buildVnpSignData(params)
- * - Tham số: params: object chứa các tham số VNPay
- * - Trả về: chuỗi signData dưới dạng "key1=val1&key2=val2..." theo thứ tự key ASCII tăng dần.
- * - Lưu ý: encodeURIComponent được áp dụng cho value để đảm bảo encoding nhất quán.
- */
-function buildVnpSignData(params) {
-  const data = { ...params };
-  delete data.vnp_SecureHash;
-  delete data.vnp_SecureHashType;
-
-  const sortedKeys = Object.keys(data).sort();
-  const parts = sortedKeys.map((k) => {
-    // Nếu value undefined/null thì chuyển thành chuỗi rỗng để tránh "undefined"
-    const value =
-      typeof data[k] === "undefined" || data[k] === null ? "" : data[k];
-    return `${k}=${encodeURIComponent(value)}`;
-  });
-  return parts.join("&");
-}
-
-/**
- * computeVnpHash(signData, secretKey)
- * - Tính HMAC-SHA512 hex digest từ signData dùng secretKey.
- */
-function computeVnpHash(signData, secretKey) {
-  return crypto
-    .createHmac("sha512", secretKey)
-    .update(Buffer.from(signData, "utf-8"))
-    .digest("hex");
-}
-
-/**
- * verifyVnpSignature(params, secretKey)
- * - Kiểm tra chữ ký VNPay trả về.
- * - Trả về object chi tiết để debug: { ok, signData, computed, incomingHash, reason }
- */
-function verifyVnpSignature(params, secretKey) {
-  const incomingHash = params.vnp_SecureHash || "";
-  if (!incomingHash) {
-    return {
-      ok: false,
-      reason: "no_incoming_hash",
-      incomingHash: "",
-      computed: "",
-    };
+  const out = {};
+  for (const k of keys) {
+    out[k] = encodeURIComponent(String(obj[k])).replace(/%20/g, "+");
   }
-  const signData = buildVnpSignData(params);
-  const computed = computeVnpHash(signData, secretKey);
-  const ok = computed === incomingHash;
-  return {
-    ok,
-    signData,
-    computed,
-    incomingHash,
-    reason: ok ? "" : "hash_mismatch",
-  };
+  return out;
 }
 
 /**
- * getVnpSecret()
- * - Lấy secret từ process.env và loại bỏ quote thừa + trim,
- *   phòng trường hợp người cấu hình .env có thêm dấu ngoặc kép vô tình.
+ * formatDate(date) -> yyyyMMddHHmmss
  */
-function getVnpSecret() {
-  const raw = process.env.VNPAY_HASH_SECRET || "";
-  // loại bỏ dấu " hoặc ' nếu có và trim khoảng trắng
-  return raw
-    .replace(/^"+|"+$/g, "")
-    .replace(/^'+|'+$/g, "")
-    .trim();
+function formatDate(date) {
+  const d = new Date(date);
+  const YYYY = d.getFullYear();
+  const MM = String(d.getMonth() + 1).padStart(2, "0");
+  const DD = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${YYYY}${MM}${DD}${hh}${mm}${ss}`;
 }
 
 /**
- * POST /api/orders
- * - Yêu cầu: user phải auth (middleware auth)
- * - Body: { items: [{product, name, price, quantity, imageUrl}], shippingAddress, totalAmount }
- * - Tạo record Order, sau đó sinh URL thanh toán VNPay và trả về cho frontend.
+ * POST /api/orders -> Tạo đơn hàng
  */
 router.post("/", auth, async (req, res) => {
   try {
     const { items, shippingAddress, totalAmount } = req.body;
 
-    // Validate cơ bản
-    if (!Array.isArray(items) || items.length === 0) {
+    if (!Array.isArray(items) || items.length === 0)
       return res.status(400).json({ message: "items required" });
-    }
-    if (
-      typeof totalAmount !== "number" ||
-      Number.isNaN(totalAmount) ||
-      totalAmount <= 0
-    ) {
-      return res.status(400).json({
-        message: "totalAmount required and must be a positive number",
-      });
-    }
+    if (typeof totalAmount !== "number" || totalAmount <= 0)
+      return res.status(400).json({ message: "totalAmount must be positive" });
 
-    // Tạo đơn hàng trong DB (chưa tính trạng thái thanh toán)
     const order = new Order({
       user: req.user._id,
       items,
       totalAmount,
       shippingAddress,
+      paymentStatus: "pending",
+      orderStatus: "created",
     });
+
+    const txnRef = `${Date.now()}${Math.floor(Math.random() * 9000 + 1000)}`;
+    order.vnp_TxnRef = txnRef;
 
     await order.save();
 
-    // Sinh URL VNPay
-    const vnpUrl = generateVNPayUrl(order);
+    const vnpUrl = await generateVNPayUrl(order, req);
 
     return res.status(201).json({
       orderId: order._id,
+      vnp_TxnRef: txnRef,
       paymentUrl: vnpUrl,
     });
   } catch (error) {
@@ -148,15 +89,13 @@ router.post("/", auth, async (req, res) => {
 });
 
 /**
- * GET /api/orders/my-orders
- * - Trả về danh sách đơn hàng của user hiện tại (đã authenticate)
+ * GET /api/orders/my-orders -> Lấy đơn hàng user
  */
 router.get("/my-orders", auth, async (req, res) => {
   try {
     const orders = await Order.find({ user: req.user._id })
       .sort({ createdAt: -1 })
       .populate("items.product");
-
     return res.json(orders);
   } catch (error) {
     console.error("Fetch my orders error:", error);
@@ -167,128 +106,128 @@ router.get("/my-orders", auth, async (req, res) => {
 });
 
 /**
- * GET /api/orders/vnpay-return
- * - VNPay redirect về endpoint này sau khi người dùng thanh toán.
- * - Chúng ta cần:
- *   1) Verify chữ ký vnp_SecureHash để đảm bảo request là hợp lệ từ VNPay.
- *   2) Nếu hợp lệ và vnp_ResponseCode === "00" => cập nhật order.paymentStatus = 'paid'.
- *   3) Redirect người dùng về frontend (VNPAY_RETURN_URL) cùng status.
- *
- * Nếu chữ ký không hợp lệ, redirect về frontend với status=99 và message=sai_chu_ky (dễ debug).
+ * GET /api/orders/vnpay_return -> VNPay redirect
  */
-router.get("/vnpay-return", async (req, res) => {
+router.get("/vnpay_return", async (req, res) => {
   try {
-    const vnpParams = req.query || {};
-    const secretKey = getVnpSecret();
+    const vnp_Params = { ...req.query };
+    const incomingSecureHash = vnp_Params["vnp_SecureHash"];
 
-    // Verify chữ ký
-    const { ok, signData, computed, incomingHash, reason } = verifyVnpSignature(
-      vnpParams,
-      secretKey
-    );
-    if (!ok) {
-      // Log đầy đủ để debug: bạn sẽ so sánh computed vs incomingHash và signData
-      console.warn("[VNPAY] signature mismatch", {
-        reason,
-        incomingHash,
-        computed,
-        signData,
-        params: vnpParams,
-      });
+    const tmnCode = config.get("vnp_TmnCode");
+    const secretKey = config.get("vnp_HashSecret");
+    const returnUrl =
+      config.get("vnp_ReturnUrl") || "http://localhost:3000/payment-result";
 
-      // Redirect về frontend và báo lỗi chữ ký
-      const returnUrl = (
-        process.env.VNPAY_RETURN_URL || "http://localhost:3000/payment-result"
-      ).replace(/\?.*$/, "");
-      return res.redirect(`${returnUrl}?status=99&message=sai_chu_ky`);
+    delete vnp_Params["vnp_SecureHash"];
+    delete vnp_Params["vnp_SecureHashType"];
+
+    const sortedParams = sortAndEncodeObject(vnp_Params);
+    const signData = qs.stringify(sortedParams, { encode: false });
+    const hmac = crypto.createHmac("sha512", secretKey);
+    const computedHash = hmac
+      .update(Buffer.from(signData, "utf-8"))
+      .digest("hex");
+
+    if (incomingSecureHash !== computedHash) {
+      console.warn("[VNPAY] Invalid signature");
+      return res.redirect(`${returnUrl}?status=97&message=invalid_signature`);
     }
 
-    // Nếu chữ ký hợp lệ -> xử lý tiếp theo theo vnp_ResponseCode
-    const responseCode = vnpParams.vnp_ResponseCode;
-    if (responseCode === "00") {
-      // Thanh toán thành công -> cập nhật order
-      const orderId = vnpParams.vnp_TxnRef;
-      try {
-        await Order.findByIdAndUpdate(orderId, {
-          paymentStatus: "paid",
-          orderStatus: "processing",
-        });
-      } catch (err) {
-        console.error("[VNPAY] update order status error:", err);
-      }
+    const txnRef = vnp_Params["vnp_TxnRef"];
+    const rspCode = vnp_Params["vnp_ResponseCode"];
+    const order = await Order.findOne({ vnp_TxnRef: txnRef });
+    if (!order)
+      return res.redirect(`${returnUrl}?status=01&message=order_not_found`);
+
+    if (rspCode === "00") {
+      order.paymentStatus = "paid";
+      order.orderStatus = "processing";
     } else {
-      // Thanh toán thất bại hoặc trạng thái khác -> bạn có thể cập nhật order.paymentStatus = 'failed' nếu muốn
+      order.paymentStatus = "failed";
     }
 
-    // Redirect về frontend kèm status trả về từ VNPay
-    const returnUrl = (
-      process.env.VNPAY_RETURN_URL || "http://localhost:3000/payment-result"
-    ).replace(/\?.*$/, "");
-    return res.redirect(
-      `${returnUrl}?status=${encodeURIComponent(responseCode)}`
-    );
+    // Lưu thêm thông tin VNPay
+    order.vnp_ResponseCode = rspCode;
+    order.vnp_TransactionNo = vnp_Params["vnp_TransactionNo"];
+    order.vnp_BankCode = vnp_Params["vnp_BankCode"];
+    order.vnp_PayDate = vnp_Params["vnp_PayDate"];
+
+    await order.save();
+    return res.redirect(`${returnUrl}?status=${rspCode}`);
   } catch (error) {
-    console.error("[VNPAY] return handler error:", error);
+    console.error("[VNPAY] Return handler error:", error);
     return res.status(500).send("Server error");
   }
 });
 
 /**
- * generateVNPayUrl(order)
- * - Xây dựng tham số VNPay, tính sign (vnp_SecureHash) và trả về URL đầy đủ để redirect người dùng tới VNPay.
- * - Lưu ý: VNPay yêu cầu amount tính theo "VND * 100" (ví dụ 10000 đồng -> 10000 * 100 = 1000000).
- * - Hàm này cũng log signData và secureHash để bạn tiện debug (xóa log khi deploy production).
+ * PUT /api/orders/pay/:txnRef -> Cập nhật trạng thái thanh toán
  */
-function generateVNPayUrl(order) {
-  const vnpUrlBase =
-    process.env.VNPAY_URL ||
-    "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html";
-  const returnUrl =
-    process.env.VNPAY_RETURN_URL || "http://localhost:3000/payment-result";
-  const tmnCode = (process.env.VNPAY_TMN_CODE || "")
-    .replace(/^"+|"+$/g, "")
-    .trim();
-  const secretKey = getVnpSecret();
+router.put("/pay/:txnRef", auth, async (req, res) => {
+  try {
+    const { txnRef } = req.params;
+    const order = await Order.findOne({ vnp_TxnRef: txnRef });
+    if (!order) return res.status(404).json({ message: "Order not found" });
 
-  const createDate = new Date()
-    .toISOString()
-    .replace(/[-:TZ.]/g, "")
-    .slice(0, 14);
-  const orderId = order._id.toString();
-  // VNPay muốn amount là số nguyên VND * 100
-  const amount = Math.round(order.totalAmount) * 100;
+    order.paymentStatus = "paid";
+    if (order.orderStatus === "created" || order.orderStatus === "pending") {
+      order.orderStatus = "processing";
+    }
 
-  const vnpParams = {
+    await order.save();
+    return res.json({ message: "Payment status updated", order });
+  } catch (error) {
+    console.error("Update payment status error:", error);
+    return res
+      .status(500)
+      .json({ message: "Server error", error: error.message });
+  }
+});
+
+/**
+ * generateVNPayUrl(order, req) -> Tạo URL thanh toán VNPay
+ */
+async function generateVNPayUrl(order, req) {
+  process.env.TZ = "Asia/Ho_Chi_Minh";
+
+  const createDate = formatDate(new Date());
+  const ipAddr = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+
+  const tmnCode = config.get("vnp_TmnCode");
+  const secretKey = config.get("vnp_HashSecret");
+  const vnpUrl = config.get("vnp_Url");
+  const returnUrl = config.get("vnp_ReturnUrl");
+
+  if (!tmnCode || !secretKey || !vnpUrl || !returnUrl) {
+    throw new Error("VNPay config missing");
+  }
+
+  const amount = Math.round(Number(order.totalAmount));
+  if (!amount || amount <= 0) throw new Error("Invalid order amount");
+
+  const vnp_Params = {
     vnp_Version: "2.1.0",
     vnp_Command: "pay",
     vnp_TmnCode: tmnCode,
-    vnp_Amount: amount,
-    vnp_CreateDate: createDate,
-    vnp_CurrCode: "VND",
-    vnp_IpAddr: "127.0.0.1",
     vnp_Locale: "vn",
-    vnp_OrderInfo: `Thanh toan don hang ${orderId}`,
+    vnp_CurrCode: "VND",
+    vnp_TxnRef: order.vnp_TxnRef,
+    vnp_OrderInfo: `Thanh toan don hang:${order.vnp_TxnRef}`,
     vnp_OrderType: "other",
+    vnp_Amount: amount * 100,
     vnp_ReturnUrl: returnUrl,
-    vnp_TxnRef: orderId,
+    vnp_IpAddr: ipAddr,
+    vnp_CreateDate: createDate,
   };
 
-  // Dựng signData và tính HMAC
-  const signData = buildVnpSignData(vnpParams);
-  const secureHash = computeVnpHash(signData, secretKey);
-  vnpParams.vnp_SecureHash = secureHash;
+  const sortedParams = sortAndEncodeObject(vnp_Params);
+  const signData = qs.stringify(sortedParams, { encode: false });
+  const hmac = crypto.createHmac("sha512", secretKey);
+  sortedParams["vnp_SecureHash"] = hmac
+    .update(Buffer.from(signData, "utf-8"))
+    .digest("hex");
 
-  // Tạo query string (encode cả key và value)
-  const queryString = Object.keys(vnpParams)
-    .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(vnpParams[k])}`)
-    .join("&");
-
-  // Log thông tin hỗ trợ debug (bạn nên xóa hoặc giảm log level khi production)
-  console.log("[VNPAY] create signData:", signData);
-  console.log("[VNPAY] computed secure hash:", secureHash);
-  console.log("[VNPAY] vnp URL:", `${vnpUrlBase}?${queryString}`);
-
-  return `${vnpUrlBase}?${queryString}`;
+  return `${vnpUrl}?${qs.stringify(sortedParams, { encode: false })}`;
 }
 
 module.exports = router;

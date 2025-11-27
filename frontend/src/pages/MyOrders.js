@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useContext } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { AuthContext } from "../context/AuthContext";
 import axios from "axios";
 
 const MyOrders = () => {
   const { user } = useContext(AuthContext);
   const navigate = useNavigate();
+  const location = useLocation(); // Để detect query string thay đổi
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -15,9 +16,11 @@ const MyOrders = () => {
     } else {
       fetchOrders();
     }
-  }, [user, navigate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, navigate, location.search]); // location.search sẽ thay đổi khi VNPay redirect
 
   const fetchOrders = async () => {
+    setLoading(true);
     try {
       const res = await axios.get("http://localhost:5000/api/orders/my-orders");
       setOrders(res.data);
@@ -30,6 +33,7 @@ const MyOrders = () => {
 
   const getStatusText = (status) => {
     const statusMap = {
+      created: "Mới tạo",
       pending: "Chờ xử lý",
       processing: "Đang xử lý",
       shipped: "Đang giao",

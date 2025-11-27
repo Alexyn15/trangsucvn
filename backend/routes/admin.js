@@ -18,7 +18,7 @@ router.post("/products", async (req, res) => {
     res.status(500).json({ message: "Server error", error: error.message });
   }
 });
-
+//sua san pham
 router.put("/products/:id", async (req, res) => {
   try {
     const product = await Product.findByIdAndUpdate(req.params.id, req.body, {

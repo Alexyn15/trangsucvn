@@ -1,21 +1,34 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useContext } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import axios from "axios";
+import { AuthContext } from "../context/AuthContext";
 
 const PaymentResult = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const status = searchParams.get("status");
+  const { token } = useContext(AuthContext); // lấy token từ context
+  const vnpStatus = searchParams.get("vnp_ResponseCode"); // VNPay param
+  const txnRef = searchParams.get("vnp_TxnRef"); // dùng vnp_TxnRef, không phải MongoDB _id
 
   useEffect(() => {
-    // Auto redirect after 5 seconds
-    const timer = setTimeout(() => {
-      navigate("/my-orders");
-    }, 5000);
+    if (vnpStatus === "00" && txnRef && token) {
+      axios
+        .put(
+          `http://localhost:5000/api/orders/pay/${txnRef}`,
+          {},
+          {
+            headers: { Authorization: `Bearer ${token}` },
+          }
+        )
+        .then((res) => console.log("Payment updated:", res.data))
+        .catch((err) => console.error("Error updating payment:", err));
+    }
 
+    const timer = setTimeout(() => navigate("/my-orders"), 5000);
     return () => clearTimeout(timer);
-  }, [navigate]);
+  }, [vnpStatus, txnRef, token, navigate]);
 
-  const isSuccess = status === "00";
+  const isSuccess = vnpStatus === "00";
 
   return (
     <div className="payment-result">
@@ -25,13 +38,11 @@ const PaymentResult = () => {
             <div className="success-icon">✓</div>
             <h1>Thanh toán thành công!</h1>
             <p>Đơn hàng của bạn đã được xác nhận.</p>
-            <p>Cảm ơn bạn đã mua hàng tại Jewelry Shop.</p>
           </>
         ) : (
           <>
             <div className="error-icon">✗</div>
             <h1>Thanh toán thất bại</h1>
-            <p>Đã có lỗi xảy ra trong quá trình thanh toán.</p>
             <p>Vui lòng thử lại sau.</p>
           </>
         )}

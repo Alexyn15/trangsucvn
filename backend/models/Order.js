@@ -38,9 +38,24 @@ const orderSchema = new mongoose.Schema({
   },
   orderStatus: {
     type: String,
-    enum: ["pending", "processing", "shipped", "delivered", "cancelled"],
-    default: "pending",
+    enum: [
+      "created",
+      "pending",
+      "processing",
+      "shipped",
+      "delivered",
+      "cancelled",
+    ],
+    default: "created",
   },
+  vnp_TxnRef: {
+    // <-- thêm dòng này
+    type: String,
+    required: true,
+    unique: true,
+  },
+  vnp_ResponseCode: String, // optional: lưu response code từ VNPay
+  vnp_TransactionNo: String, // optional: lưu transactionNo từ VNPay
   createdAt: {
     type: Date,
     default: Date.now,
